@@ -1,0 +1,103 @@
+# CardDemo Java 21 Docker Compose Configuration
+# Migrated from IBM Enterprise COBOL 6.3
+#
+# Required environment variables (set in .env file or export before running):
+# - POSTGRES_PASSWORD: PostgreSQL database password
+# - POSTGRES_USER: PostgreSQL database user (default: carddemo)
+# - POSTGRES_DB: PostgreSQL database name (default: carddemo)
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database - replaces VSAM files and DB2
+  postgres:
+    image: postgres:16-alpine
+    container_name: carddemo-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - carddemo-network
+
+  # Redis Cache - for session management and caching
+  redis:
+    image: redis:7-alpine
+    container_name: carddemo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - carddemo-network
+
+  # CardDemo API Application
+  carddemo-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carddemo-api
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-carddemo}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-carddemo}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - carddemo-network
+
+  # CardDemo Batch Application
+  carddemo-batch:
+    build:
+      context: .
+      dockerfile: Dockerfile.batch
+    container_name: carddemo-batch
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-carddemo}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-carddemo}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - carddemo-network
+    profiles:
+      - batch
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  carddemo-network:
+    driver: bridge
